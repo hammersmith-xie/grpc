@@ -101,6 +101,9 @@ class ChannelInterface {
     }
     return true;
   }
+  virtual internal::Call CreateCall(const internal::RpcMethod& method,
+                                    ::grpc::ClientContext* context,
+                                    ::grpc::CompletionQueue* cq) = 0;
 
  private:
   template <class R>
@@ -130,9 +133,6 @@ class ChannelInterface {
   friend class ::grpc::internal::RpcMethod;
   friend class ::grpc::experimental::DelegatingChannel;
   friend class ::grpc::internal::InterceptedChannel;
-  virtual internal::Call CreateCall(const internal::RpcMethod& method,
-                                    ::grpc::ClientContext* context,
-                                    ::grpc::CompletionQueue* cq) = 0;
   virtual void PerformOpsOnCall(internal::CallOpSetInterface* ops,
                                 internal::Call* call) = 0;
   virtual void* RegisterMethod(const char* method) = 0;
