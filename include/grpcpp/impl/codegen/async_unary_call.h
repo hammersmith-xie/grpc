@@ -104,6 +104,51 @@ class ClientAsyncResponseReaderHelper {
     return result;
   }
 
+  template <class R, class W, class BaseR = R, class BaseW = W>
+  static void Create(
+      ClientAsyncResponseReader<R>* result, ::grpc::internal::Call& call,
+      ::grpc::internal::CallOpSet<::grpc::internal::CallOpSendInitialMetadata,
+                                  ::grpc::internal::CallOpSendMessage,
+                                  ::grpc::internal::CallOpClientSendClose,
+                                  ::grpc::internal::CallOpRecvInitialMetadata,
+                                  ::grpc::internal::CallOpRecvMessage<R>,
+                                  ::grpc::internal::CallOpClientRecvStatus>&
+          signle_buf_obj,
+      ::grpc::internal::CallOpSet<::grpc::internal::CallOpRecvMessage<R>,
+                                  ::grpc::internal::CallOpClientRecvStatus>&
+          finish_buf_obj,
+      ::grpc::ChannelInterface* channel, ::grpc::CompletionQueue* cq,
+      const ::grpc::internal::RpcMethod& method, ::grpc::ClientContext* context,
+      const W& request) /* __attribute__((noinline)) */ {
+    //::grpc::internal::Call call = channel->CreateCall(method, context, cq);
+    /*ClientAsyncResponseReader<R>* result =
+        new (::grpc::g_core_codegen_interface->grpc_call_arena_alloc(
+            call.call(), sizeof(ClientAsyncResponseReader<R>)))
+            ClientAsyncResponseReader<R>(call, context); */
+    SetupRequest<BaseR, BaseW>(
+        call.call(), signle_buf_obj, finish_buf_obj, &result->single_buf_,
+        &result->read_initial_metadata_, &result->finish_,
+        static_cast<const BaseW&>(request));
+  }
+
+  template <class R, class W, class BaseR = R, class BaseW = W>
+  static void Create(ClientAsyncResponseReader<R>* result,
+                     ::grpc::internal::Call& call,
+                     ::grpc::ChannelInterface* channel,
+                     ::grpc::CompletionQueue* cq,
+                     const ::grpc::internal::RpcMethod& method,
+                     ::grpc::ClientContext* context,
+                     const W& request) /* __attribute__((noinline)) */ {
+    //::grpc::internal::Call call = channel->CreateCall(method, context, cq);
+    /*ClientAsyncResponseReader<R>* result =
+        new (::grpc::g_core_codegen_interface->grpc_call_arena_alloc(
+            call.call(), sizeof(ClientAsyncResponseReader<R>)))
+            ClientAsyncResponseReader<R>(call, context); */
+    SetupRequest<BaseR, BaseW>(
+        call.call(), &result->single_buf_, &result->read_initial_metadata_,
+        &result->finish_, static_cast<const BaseW&>(request));
+  }
+
   // Various helper functions to reduce templating use
 
   template <class R, class W>
@@ -184,6 +229,94 @@ class ClientAsyncResponseReaderHelper {
     };
   }
 
+  template <class R, class W>
+  static void SetupRequest(
+      grpc_call* call,
+      ::grpc::internal::CallOpSet<::grpc::internal::CallOpSendInitialMetadata,
+                                  ::grpc::internal::CallOpSendMessage,
+                                  ::grpc::internal::CallOpClientSendClose,
+                                  ::grpc::internal::CallOpRecvInitialMetadata,
+                                  ::grpc::internal::CallOpRecvMessage<R>,
+                                  ::grpc::internal::CallOpClientRecvStatus>&
+          signle_buf_obj,
+      ::grpc::internal::CallOpSet<::grpc::internal::CallOpRecvMessage<R>,
+                                  ::grpc::internal::CallOpClientRecvStatus>&
+          finish_buf_obj,
+      ::grpc::internal::CallOpSendInitialMetadata** single_buf_ptr,
+
+      std::function<void(ClientContext*, internal::Call*,
+                         internal::CallOpSendInitialMetadata*, void*)>*
+          read_initial_metadata,
+      std::function<
+          void(ClientContext*, internal::Call*, bool initial_metadata_read,
+               internal::CallOpSendInitialMetadata*,
+               internal::CallOpSetInterface**, void*, Status*, void*)>* finish,
+      const W& request) {
+    auto* single_buf = &signle_buf_obj;
+    *single_buf_ptr = single_buf;
+    // TODO(ctiller): don't assert
+    GPR_CODEGEN_ASSERT(single_buf->SendMessage(request).ok());
+    single_buf->ClientSendClose();
+
+    // The purpose of the following functions is to type-erase the actual
+    // templated type of the CallOpSet being used by hiding that type inside the
+    // function definition rather than specifying it as an argument of the
+    // function or a member of the class. The type-erased CallOpSet will get
+    // static_cast'ed back to the real type so that it can be used properly.
+    *read_initial_metadata =
+        [](ClientContext* context, internal::Call* call,
+           internal::CallOpSendInitialMetadata* single_buf_view, void* tag) {
+          auto* single_buf = static_cast<::grpc::internal::CallOpSet<
+              ::grpc::internal::CallOpSendInitialMetadata,
+              ::grpc::internal::CallOpSendMessage,
+              ::grpc::internal::CallOpClientSendClose,
+              ::grpc::internal::CallOpRecvInitialMetadata,
+              ::grpc::internal::CallOpRecvMessage<R>,
+              ::grpc::internal::CallOpClientRecvStatus>*>(single_buf_view);
+          single_buf->set_output_tag(tag);
+          single_buf->RecvInitialMetadata(context);
+          call->PerformOps(single_buf);
+        };
+
+    // Note that this function goes one step further than the previous one
+    // because it type-erases the message being written down to a void*. This
+    // will be static-cast'ed back to the class specified here by hiding that
+    // class information inside the function definition. Note that this feature
+    // expects the class being specified here for R to be a base-class of the
+    // "real" R without any multiple-inheritance (as applies in protbuf wrt
+    // MessageLite)
+    *finish = [&finish_buf_obj](
+                  ClientContext* context, internal::Call* call,
+                  bool initial_metadata_read,
+                  internal::CallOpSendInitialMetadata* single_buf_view,
+                  internal::CallOpSetInterface** finish_buf_ptr, void* msg,
+                  Status* status, void* tag) {
+      if (initial_metadata_read) {
+        auto* finish_buf = &finish_buf_obj;
+        *finish_buf_ptr = finish_buf;
+        finish_buf->set_output_tag(tag);
+        finish_buf->RecvMessage(static_cast<R*>(msg));
+        finish_buf->AllowNoMessage();
+        finish_buf->ClientRecvStatus(context, status);
+        call->PerformOps(finish_buf);
+      } else {
+        auto* single_buf = static_cast<::grpc::internal::CallOpSet<
+            ::grpc::internal::CallOpSendInitialMetadata,
+            ::grpc::internal::CallOpSendMessage,
+            ::grpc::internal::CallOpClientSendClose,
+            ::grpc::internal::CallOpRecvInitialMetadata,
+            ::grpc::internal::CallOpRecvMessage<R>,
+            ::grpc::internal::CallOpClientRecvStatus>*>(single_buf_view);
+        single_buf->set_output_tag(tag);
+        single_buf->RecvInitialMetadata(context);
+        single_buf->RecvMessage(static_cast<R*>(msg));
+        single_buf->AllowNoMessage();
+        single_buf->ClientRecvStatus(context, status);
+        call->PerformOps(single_buf);
+      }
+    };
+  }
+
   static void StartCall(
       ::grpc::ClientContext* context,
       ::grpc::internal::CallOpSendInitialMetadata* single_buf) {
@@ -208,6 +341,43 @@ class ClientAsyncResponseReaderFactory {
       result->StartCall();
     }
     return result;
+  }
+  template <class W>
+  static void Create(
+      ClientAsyncResponseReader<R>* result, ::grpc::internal::Call& call,
+      ::grpc::internal::CallOpSet<::grpc::internal::CallOpSendInitialMetadata,
+                                  ::grpc::internal::CallOpSendMessage,
+                                  ::grpc::internal::CallOpClientSendClose,
+                                  ::grpc::internal::CallOpRecvInitialMetadata,
+                                  ::grpc::internal::CallOpRecvMessage<R>,
+                                  ::grpc::internal::CallOpClientRecvStatus>&
+          signle_buf_obj,
+      ::grpc::internal::CallOpSet<::grpc::internal::CallOpRecvMessage<R>,
+                                  ::grpc::internal::CallOpClientRecvStatus>&
+          finish_buf_obj,
+      ::grpc::ChannelInterface* channel, ::grpc::CompletionQueue* cq,
+      const ::grpc::internal::RpcMethod& method, ::grpc::ClientContext* context,
+      const W& request, bool start) {
+    ClientAsyncResponseReaderHelper::Create<R>(result, call, signle_buf_obj,
+                                               finish_buf_obj, channel, cq,
+                                               method, context, request);
+    if (start) {
+      result->StartCall();
+    }
+  }
+  template <class W>
+  static void Create(ClientAsyncResponseReader<R>* result,
+                     ::grpc::internal::Call& call,
+                     ::grpc::ChannelInterface* channel,
+                     ::grpc::CompletionQueue* cq,
+                     const ::grpc::internal::RpcMethod& method,
+                     ::grpc::ClientContext* context, const W& request,
+                     bool start) {
+    ClientAsyncResponseReaderHelper::Create<R>(result, call, channel, cq,
+                                               method, context, request);
+    if (start) {
+      result->StartCall();
+    }
   }
 };
 
@@ -260,6 +430,9 @@ class ClientAsyncResponseReader final
     finish_(context_, &call_, initial_metadata_read_, single_buf_, &finish_buf_,
             static_cast<void*>(msg), status, tag);
   }
+  ClientAsyncResponseReader(::grpc::internal::Call call,
+                            ::grpc::ClientContext* context)
+      : context_(context), call_(call) {}
 
  private:
   friend class internal::ClientAsyncResponseReaderHelper;
@@ -268,13 +441,9 @@ class ClientAsyncResponseReader final
   bool started_ = false;
   bool initial_metadata_read_ = false;
 
-  ClientAsyncResponseReader(::grpc::internal::Call call,
-                            ::grpc::ClientContext* context)
-      : context_(context), call_(call) {}
-
   // disable operator new
-  static void* operator new(std::size_t size);
-  static void* operator new(std::size_t /*size*/, void* p) { return p; }
+  // static void* operator new(std::size_t size);
+  // static void* operator new(std::size_t /*size*/, void* p) { return p; }
 
   internal::CallOpSendInitialMetadata* single_buf_;
   internal::CallOpSetInterface* finish_buf_ = nullptr;
