@@ -69,6 +69,10 @@ class Channel final : public ::grpc::ChannelInterface,
   /// not available.
   std::string GetServiceConfigJSON() const;
 
+  ::grpc::internal::Call CreateCall(const ::grpc::internal::RpcMethod& method,
+                                    ::grpc::ClientContext* context,
+                                    ::grpc::CompletionQueue* cq) override;
+
  private:
   template <class InputMessage, class OutputMessage>
   friend class ::grpc::internal::BlockingUnaryCallImpl;
@@ -84,10 +88,6 @@ class Channel final : public ::grpc::ChannelInterface,
           std::vector<std::unique_ptr<
               ::grpc::experimental::ClientInterceptorFactoryInterface>>
               interceptor_creators);
-
-  ::grpc::internal::Call CreateCall(const ::grpc::internal::RpcMethod& method,
-                                    ::grpc::ClientContext* context,
-                                    ::grpc::CompletionQueue* cq) override;
   void PerformOpsOnCall(::grpc::internal::CallOpSetInterface* ops,
                         ::grpc::internal::Call* call) override;
   void* RegisterMethod(const char* method) override;
